@@ -1,0 +1,295 @@
+---
+title: "NYDP Shooting Incident Data (Historic)"
+author: "A.Saleh"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  geometry: margin=1in
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(stringr)
+library(readr)
+library(dplyr)
+library(conflicted)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+# Set global options for knitr
+opts_chunk$set(tidy = TRUE, tidy.opts = list(width.cutoff = 40))
+```
+
+# Step 1: Identifying and importing Data
+
+
+we will start by getting the 
+```{r getting_data}
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+```
+Now we are going to read in the data as CSV
+```{r import_data, message=FALSE}
+# Read in the data
+Shooting_data <- read_csv(url_in)
+# View the column specifications
+spec(Shooting_data)
+Shooting_data
+```
+# Step 2: Transforming and cleaning data 
+
+## Analysing Features:
+
+* **INCIDENT_KEY:** A unique identifier (numeric) for each shooting incident.
+
+* **OCCUR_DATE:** The date when the shooting incident occurred, stored as a character string (e.g., "05/05/2022").
+
+* **OCCUR_TIME:** The time of day when the shooting incident occurred, stored in a time format.
+
+* **BORO:** The borough where the shooting incident took place, represented as a character string (there are 5 administrative divisions in NYC Bronx, Staten Island, Queens, Brooklyn, Manhattan).
+
+* **LOC_OF_OCCUR_DESC:** A description of where the incident occurred relative to a building or structure (e.g., "INSIDE", "OUTSIDE").
+
+* **PRECINCT:** The NYPD precinct number where the incident occurred, represented as a numeric value.
+
+* **JURISDICTION_CODE:** A numeric code indicating the law enforcement agency or jurisdiction responsible for handling the incident.
+
+* **LOC_CLASSFCTN_DESC:** A classification of the location where the incident took place (e.g., "RESIDENCE", "PARK", "STREET").
+
+* **LOCATION_DESC:**  Additional descriptive information about the location of the incident, often more specific than the classification.
+
+* **STATISTICAL_MURDER_FLAG:** A logical (TRUE/FALSE) indicator of whether the incident was classified as a murder.
+
+* **PERP_AGE_GROUP:** The age group of the perpetrator involved in the incident, represented as a character string (e.g., "18-24", "25-44").
+
+* **PERP_SEX:** The gender of the perpetrator involved in the incident, represented as a character string (e.g., "M" for male, "F" for female).
+
+* **PERP_RACE:** The race of the perpetrator, represented as a character string (e.g., "Black", "White", "Hispanic").
+
+* **VIC_AGE_GROUP:** The age group of the victim involved in the incident, represented as a character string (e.g., "18-24", "25-44").
+
+* **VIC_SEX:** The gender of the victim involved in the incident, represented as a character string (e.g., "M" for male, "F" for female).
+
+* **VIC_RACE:** The race of the victim, represented as a character string (e.g., "Black", "White", "Hispanic").
+
+* **X_COORD_CD:** The X-coordinate in the city’s coordinate system (numeric), representing the geographic location of the incident.
+
+* **Y_COORD_CD:** The Y-coordinate in the city’s coordinate system (numeric), representing the geographic location of the incident.
+
+* **Latitude:** The latitude coordinate (numeric) of the location where the incident occurred.
+
+* **Longitude**: The longitude coordinate (numeric) of the location where the incident occurred.
+
+* **Lon_Lat:** A character string combining the latitude and longitude coordinates, typically in the format "Longitude, Latitude".
+
+## Analysis Description:
+
+My goal here to perform temporal analysis over the crime in the entire city to uncover trends in that aspect like Seasonal trends, day/ night, before and after policy changes, etc.
+To do that I will need to Engineer some new features and a lot of the current features can be removed since they have no impact on the scope of my analysis.
+
+**Features to be dropped:**
+* Unique Identifier: INCIDENT_KEY
+* Juristiction specific: JURISDICTION_CODE
+* Location specific:LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, LOCATION_DESC, PRECINCT
+* Demographic Specific: PERP_AGE_GROUP, PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE
+* Position Specific: X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat
+
+```{r dropping_features, message=FALSE}
+# Drop the specified columns
+Shooting_data_cleaned <- Shooting_data %>%
+  select(-c(INCIDENT_KEY, JURISDICTION_CODE, LOC_OF_OCCUR_DESC,
+            LOC_CLASSFCTN_DESC, LOCATION_DESC, PERP_AGE_GROUP, 
+            PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE,
+            PRECINCT, X_COORD_CD,Y_COORD_CD, Latitude, Longitude,
+            Longitude, Lon_Lat))
+```
+
+now the next step would be changing the data type OCCUR_DATE to date
+
+```{r naming_and_dtypes, message=FALSE}
+# Convert OCCUR_DATE to Date type using mutate and mdy
+Shooting_data_cleaned <- Shooting_data_cleaned %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+
+# Verify the change
+str(Shooting_data$OCCUR_DATE)
+# Rename specific columns using rename
+Shooting_data_cleaned <- Shooting_data_cleaned %>%
+  rename(
+    date = OCCUR_DATE,
+    time = OCCUR_TIME,
+    borough = BORO,
+    murder_flag = STATISTICAL_MURDER_FLAG)
+```
+
+
+```{r Feature engineering dates, message=FALSE}
+# Engineer features from date for temporal analysis
+Shooting_data_eng <- Shooting_data_cleaned %>%
+  mutate(
+    # Extract the year from date
+    year = year(date),
+    # Extract the month from date
+    month = month(date, label = TRUE, abbr = TRUE),
+    # Extract the day of the week from date
+    weekday = wday(date, label = TRUE, abbr = TRUE),
+    # Extract the day of the month from date
+    day = day(date),
+    # Create a binary variable weekend or not
+    isWeekend = if_else(weekday %in% c("Sat", "Sun"), TRUE, FALSE),
+    # Create a variable for the season 
+    season = case_when(
+      month %in% c("Dec", "Jan", "Feb") ~ "Winter",
+      month %in% c("Mar", "Apr", "May") ~ "Spring",
+      month %in% c("Jun", "Jul", "Aug") ~ "Summer",
+      month %in% c("Sep", "Oct", "Nov") ~ "Fall",
+      TRUE ~ NA_character_),
+    time = hms::as_hms(time),
+    hour = hour(time),
+    dayPeriod = case_when(
+      hour >= 0 & hour < 6 ~ "Night",
+      hour >= 6 & hour < 12 ~ "Morning",
+      hour >= 12 & hour < 18 ~ "Afternoon",
+      hour >= 18 & hour < 24 ~ "Evening",
+      TRUE ~ NA_character_
+    ),
+  )%>%
+  select(-c(hour, weekday, day, borough))
+
+# View the first few rows to check the new features
+column_names <- colnames(Shooting_data_eng)
+column_names
+```
+
+# Step 3: analysis and plotting
+
+## time trend analysis:
+
+analysing by month/year
+```{r year_month, message=FALSE}
+# Aggregate data by year and month
+trend_data_ym <- Shooting_data_eng %>%
+  mutate(year = as.numeric(year), month = as.numeric(month)) %>%
+  group_by(year, month) %>%
+  summarise(Incidents = n())
+
+# Convert year and month to a Date object using the 15th of each month
+trend_data_ym <- trend_data_ym %>%
+  mutate(date = as.Date(paste(year, sprintf("%02d", month), "15", sep = "-")))
+
+# Plot the trend over time
+ggplot(trend_data_ym, aes(x = date, y = Incidents)) +
+  geom_line() +
+  labs(title = "Trend of Shooting Incidents Over Time", x = "Year-Month", y = "Number of Incidents") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y-%m") +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90))
+max_row <- trend_data_ym[which.max(trend_data_ym$Incidents), ]
+year_month_max <- paste(max_row$year, sprintf("%02d", max_row$month), sep = "-")
+year_month_max
+
+min_row <- trend_data_ym[which.min(trend_data_ym$Incidents), ]
+year_month_min <- paste(min_row$year, sprintf("%02d", min_row$month), sep = "-")
+year_month_min
+```
+
+From the plot we can see that shootings were really high and steadely went down reaching its lowest pointon february 2018 then shootings spiked again around july 2020  during the hight of covid in the US This might be related to shortage of law enforcements and how busy they were with all the lootings.
+
+We can also notice a difference yearly which might indicate a seasonal pattern which we will explore next. 
+
+## monthly averages analysis:
+
+```{r month, message=FALSE}
+# Calculate the average number of incidents per month across all years
+monthly_avg <- Shooting_data_eng %>%
+mutate(month = as.numeric(month)) %>%
+group_by(month) %>%
+summarise(Average_Incidents = n()/19) %>%
+ungroup()
+# Plot the average monthly crime
+8
+ggplot(monthly_avg, aes(x = factor(month,
+levels = 1:12, labels = month.name),
+y = Average_Incidents)) + geom_bar(stat = "identity",
+fill = "orange") + labs(title = "Average Monthly Crime Incidents",
+x = "Month", y = "Average Number of Incidents") +
+theme_minimal() + theme(axis.text.x = element_text(angle = 90))
+```
+
+We can notice a pattern where shootings tends to increase during the summer season specifically in July and August. This could be due to a lot of factors, including increased outdoor activities, social gatherings, and possibly higher levels of tension from heat.
+
+There is also a trend of lower lower averages during winter months like January and feberuary which could be caused by colder weather, leading to fewer people being outside leading to less confrontations or criminal activity.
+
+There's a slight decrease in incidents in december during the holiday season, where people may be more focused on celebrations and family gatherings causing less tensions, or traveling abroad.
+
+## Further analysis that could be added:
+
+more analysis and plots can be added to account for other temporal factors like weekends vs weekdays, holiday seasons, different parts of the month, the specific period of the day etc.
+
+also murder flag can be used to differenciate between the shootings based on severity.
+
+# Step 4: modeling data
+
+```{r modeling, message=FALSE}
+# Aggregate data to create 'Incidents' column
+trend_data_agg <- Shooting_data_eng %>%
+  mutate(year = as.numeric(format(date, "%Y")),
+         month = as.numeric(format(date, "%m"))) %>%
+  group_by(year, month) %>%
+  summarise(Incidents = n()) %>%
+  ungroup()
+
+# Fit the linear model using the correct dataset and columns
+ln_mdl <- lm(Incidents ~ year + month, data = trend_data_agg)
+
+# Make predictions
+trend_data_agg$predicted_Incidents <- predict(ln_mdl, trend_data_agg)
+
+# Convert year and month to a Date object for plotting
+trend_data_agg$date <- as.Date(paste(trend_data_agg$year, trend_data_agg$month, "01", sep = "-"))
+
+# Plot actual vs predicted
+ggplot(trend_data_agg, aes(x = date)) +
+  geom_line(aes(y = Incidents, color = "Actual")) +
+  geom_line(aes(y = predicted_Incidents, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Shooting Incidents Over Time",
+       x = "Date",
+       y = "Number of Incidents") +
+  scale_color_manual(values = c("Actual" = "blue", "Predicted" = "red")) +
+  theme_minimal()
+```
+
+## Comments on model:
+
+The model shows the actual versus predicted number of shooting incidents over time, based on year and month as predictors.it also captures the general trend over time, but there's noticeable variability in the actual data that isn't fully captured by the linear model like the seasonal peaks and bottoms and outliers like in the covid months. 
+
+This could suggest that while the model might be good for identifying the long-term trend, it may not be as effective at predicting short-term fluctuations or outlier events.
+
+This could also suggest that using these variable oversimplifies the problem, and a nonlinear model might be a better fit.
+
+# Step 5: Bias identification
+
+Some of the biases that could be present in this report include:
+
+* **Selection Bias:**
+
+The data collected may not cover all time periods equally, particularly if there are gaps or important historical events not represented. The data is also limited to New York City, which might not be representative of broader trends and may generalize incorrectly to other areas.
+
+* **Reporting related Bias:**
+
+Certain incidents may go unreported or get classified incorrectly, particularly in areas with understaffed police departments which could skew the analysis by underestimating the true numbers.
+
+* **Bias due to demographic:**
+
+Without demographic breakdowns, the analysis may unintentionally suggest that all populations are equally affected, as disparities are not shown.
+
+* **Event-Specific Bias:**
+
+Significant events (e.g., natural disasters, pandemics, roits, changes in policy, etc..) can heavily affect shooting patterns. If not accounted for, those changes in shooting may be attributed to the wrong factors.
+
+* **Confirmation Bias:**
+
+as in most cases viewer may have preconceived notions about what the data should reveal, which can lead them to interpretations that confirm preexisting beliefs rather than objectively see the patterns from the analysis.
+
+
+
